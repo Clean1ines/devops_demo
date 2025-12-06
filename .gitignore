@@ -28,3 +28,5 @@ __pycache__/
 .vscode/
 .idea/
 *.swp
+dump.txt
+code_dump.txt
