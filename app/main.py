@@ -23,8 +23,9 @@ def health_check():
         "database": "connected"
     }
 
+# Бизнес-метрики в JSON формате (должен быть доступен по /api/metrics)
 @app.get("/api/metrics")
-def get_metrics():
+def get_business_metrics():
     REQUESTS_TOTAL.labels(endpoint="/api/metrics").inc()
     ACTIVE_CONNECTIONS.inc()
     try:
@@ -37,6 +38,7 @@ def get_metrics():
     finally:
         ACTIVE_CONNECTIONS.dec()
 
+# Prometheus метрики в текстовом формате (должен быть доступен по /metrics)
 @app.get("/metrics")
 def prometheus_metrics():
     REQUESTS_TOTAL.labels(endpoint="/metrics").inc()
