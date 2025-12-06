@@ -1,0 +1,1341 @@
+===== FILE: ./run.sh =====
+#!/bin/bash
+echo "=== Neolant DevOps Demo ==="
+
+# Останавливаем старые контейнеры
+echo "0. Stopping old containers..."
+docker-compose -f deploy/docker-compose.yml down 2>/dev/null || true
+
+# Генерируем SSL сертификаты если их нет
+if [ ! -f deploy/ssl/neolant.crt ] || [ ! -f deploy/ssl/neolant.key ]; then
+    echo "0.5. Generating SSL certificates (local only, not committed)..."
+    mkdir -p deploy/ssl
+    cd deploy/ssl
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout neolant.key -out neolant.crt \
+        -subj "/C=RU/ST=Moscow/L=Moscow/O=Neolant/CN=localhost"
+    cd ../..
+    echo "SSL certificates generated in deploy/ssl/ (local only)"
+fi
+
+echo "1. Building images..."
+docker-compose -f deploy/docker-compose.yml build
+
+echo "2. Starting services..."
+docker-compose -f deploy/docker-compose.yml up -d
+
+echo "3. Waiting for startup..."
+sleep 15
+
+echo "4. Health check..."
+curl -s http://localhost:8081/health && echo " - .NET OK" || echo " - .NET FAILED"
+curl -s http://localhost:8001/health && echo " - Python OK" || echo " - Python FAILED"
+
+echo ""
+echo "=== Services running ==="
+echo "PostgreSQL:     localhost:5433"
+echo ".NET API:       http://localhost:8081"
+echo "Python API:     http://localhost:8001"
+echo ""
+echo "Test commands:"
+echo "  curl http://localhost:8081/api/industrial-objects | jq ."
+echo "  curl http://localhost:8001/api/metrics"
+echo ""
+echo "To stop:        docker-compose -f deploy/docker-compose.yml down"
+
+
+===== FILE: ./dotnet_app/NeolantDemo.csproj =====
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
+    <PackageReference Include="Npgsql" Version="8.0.3" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+  </ItemGroup>
+</Project>
+
+
+===== FILE: ./dotnet_app/Program.cs =====
+using System.Text.Json;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddControllers();
+var app = builder.Build();
+
+app.MapGet("/", () => "Neolant .NET API v1.0");
+app.MapGet("/health", () => JsonSerializer.Serialize(new {
+    status = "healthy",
+    service = "dotnet-api",
+    timestamp = DateTime.UtcNow
+}));
+app.MapGet("/api/industrial-objects", () => JsonSerializer.Serialize(new[] {
+    new { id = 1, name = "Белоярская АЭС", type = "АЭС", location = "Свердловская область" },
+    new { id = 2, name = "Сургутская ГРЭС-2", type = "ТЭЦ", location = "ХМАО-Югра" },
+    new { id = 3, name = "Нововоронежская АЭС", type = "АЭС", location = "Воронежская область" }
+}));
+app.MapGet("/api/equipment/{objectId}", (int objectId) => JsonSerializer.Serialize(new[] {
+    new { id = 1, name = "Турбина Т-250", objectId = objectId, status = "operational" },
+    new { id = 2, name = "Генератор ГСВ-1500", objectId = objectId, status = "operational" }
+}));
+
+app.Run();
+
+
+===== FILE: ./dotnet_app/Dockerfile =====
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+WORKDIR /src
+COPY NeolantDemo.csproj .
+RUN dotnet restore
+COPY Program.cs .
+RUN dotnet publish -c Release -o /app/publish
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+WORKDIR /app
+COPY --from=build /app/publish .
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "NeolantDemo.dll"]
+
+
+===== FILE: ./dotnet_app/out/NeolantDemo.runtimeconfig.json =====
+{
+  "runtimeOptions": {
+    "tfm": "net8.0",
+    "frameworks": [
+      {
+        "name": "Microsoft.NETCore.App",
+        "version": "8.0.0"
+      },
+      {
+        "name": "Microsoft.AspNetCore.App",
+        "version": "8.0.0"
+      }
+    ],
+    "configProperties": {
+      "System.GC.Server": true,
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false
+    }
+  }
+}
+
+===== FILE: ./dotnet_app/out/NeolantDemo.deps.json =====
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "NeolantDemo/1.0.0": {
+        "dependencies": {
+          "Microsoft.AspNetCore.OpenApi": "8.0.0",
+          "Npgsql": "8.0.3",
+          "Swashbuckle.AspNetCore": "6.5.0"
+        },
+        "runtime": {
+          "NeolantDemo.dll": {}
+        }
+      },
+      "Microsoft.AspNetCore.OpenApi/8.0.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net8.0/Microsoft.AspNetCore.OpenApi.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53112"
+          }
+        }
+      },
+      "Microsoft.Extensions.ApiDescription.Server/6.0.5": {},
+      "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {},
+      "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.0"
+        }
+      },
+      "Microsoft.OpenApi/1.4.3": {
+        "runtime": {
+          "lib/netstandard2.0/Microsoft.OpenApi.dll": {
+            "assemblyVersion": "1.4.3.0",
+            "fileVersion": "1.4.3.0"
+          }
+        }
+      },
+      "Npgsql/8.0.3": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.0"
+        },
+        "runtime": {
+          "lib/net8.0/Npgsql.dll": {
+            "assemblyVersion": "8.0.3.0",
+            "fileVersion": "8.0.3.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore/6.5.0": {
+        "dependencies": {
+          "Microsoft.Extensions.ApiDescription.Server": "6.0.5",
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerGen": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerUI": "6.5.0"
+        }
+      },
+      "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.Swagger.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+        "dependencies": {
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerGen.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerUI.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "NeolantDemo/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.AspNetCore.OpenApi/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-T4mwMvPSOYAp+KeQ4xO8H2rxpiOMJ9W/7yBBkUTMp96AHtGlPN4s7hbax2tM61LxTY775JKL4fiv5grn41EHXw==",
+      "path": "microsoft.aspnetcore.openapi/8.0.0",
+      "hashPath": "microsoft.aspnetcore.openapi.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.ApiDescription.Server/6.0.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ckb5EDBUNJdFWyajfXzUIMRkhf52fHZOQuuZg/oiu8y7zDCVwD0iHhew6MnThjHmevanpxL3f5ci2TtHQEN6bw==",
+      "path": "microsoft.extensions.apidescription.server/6.0.5",
+      "hashPath": "microsoft.extensions.apidescription.server.6.0.5.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-cjWrLkJXK0rs4zofsK4bSdg+jhDLTaxrkXu4gS6Y7MAlCvRyNNgwY/lJi5RDlQOnSZweHqoyvgvbdvQsRIW+hg==",
+      "path": "microsoft.extensions.dependencyinjection.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-arDBqTgFCyS0EvRV7O3MZturChstm50OJ0y9bDJvAcmEPJm0FFpFyjU/JLYyStNGGey081DvnQYlncNX5SJJGA==",
+      "path": "microsoft.extensions.logging.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.OpenApi/1.4.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-rURwggB+QZYcSVbDr7HSdhw/FELvMlriW10OeOzjPT7pstefMo7IThhtNtDudxbXhW+lj0NfX72Ka5EDsG8x6w==",
+      "path": "microsoft.openapi/1.4.3",
+      "hashPath": "microsoft.openapi.1.4.3.nupkg.sha512"
+    },
+    "Npgsql/8.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-6WEmzsQJCZAlUG1pThKg/RmeF6V+I0DmBBBE/8YzpRtEzhyZzKcK7ulMANDm5CkxrALBEC8H+5plxHWtIL7xnA==",
+      "path": "npgsql/8.0.3",
+      "hashPath": "npgsql.8.0.3.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-FK05XokgjgwlCI6wCT+D4/abtQkL1X1/B9Oas6uIwHFmYrIO9WUD5aLC9IzMs9GnHfUXOtXZ2S43gN1mhs5+aA==",
+      "path": "swashbuckle.aspnetcore/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XWmCmqyFmoItXKFsQSwQbEAsjDKcxlNf1l+/Ki42hcb6LjKL8m5Db69OTvz5vLonMSRntYO1XLqz0OP+n3vKnA==",
+      "path": "swashbuckle.aspnetcore.swagger/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swagger.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Y/qW8Qdg9OEs7V013tt+94OdPxbRdbhcEbw4NiwGvf4YBcfhL/y7qp/Mjv/cENsQ2L3NqJ2AOu94weBy/h4KvA==",
+      "path": "swashbuckle.aspnetcore.swaggergen/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggergen.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OvbvxX+wL8skxTBttcBsVxdh73Fag4xwqEU2edh4JMn7Ws/xJHnY/JB1e9RoCb6XpDxUF3hD9A0Z1lEUx40Pfw==",
+      "path": "swashbuckle.aspnetcore.swaggerui/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggerui.6.5.0.nupkg.sha512"
+    }
+  }
+}
+
+===== FILE: ./dotnet_app/out/out/NeolantDemo.runtimeconfig.json =====
+{
+  "runtimeOptions": {
+    "tfm": "net8.0",
+    "frameworks": [
+      {
+        "name": "Microsoft.NETCore.App",
+        "version": "8.0.0"
+      },
+      {
+        "name": "Microsoft.AspNetCore.App",
+        "version": "8.0.0"
+      }
+    ],
+    "configProperties": {
+      "System.GC.Server": true,
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false
+    }
+  }
+}
+
+===== FILE: ./dotnet_app/out/out/NeolantDemo.deps.json =====
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "NeolantDemo/1.0.0": {
+        "dependencies": {
+          "Microsoft.AspNetCore.OpenApi": "8.0.0",
+          "Npgsql": "8.0.3",
+          "Swashbuckle.AspNetCore": "6.5.0"
+        },
+        "runtime": {
+          "NeolantDemo.dll": {}
+        }
+      },
+      "Microsoft.AspNetCore.OpenApi/8.0.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net8.0/Microsoft.AspNetCore.OpenApi.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53112"
+          }
+        }
+      },
+      "Microsoft.Extensions.ApiDescription.Server/6.0.5": {},
+      "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {},
+      "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.0"
+        }
+      },
+      "Microsoft.OpenApi/1.4.3": {
+        "runtime": {
+          "lib/netstandard2.0/Microsoft.OpenApi.dll": {
+            "assemblyVersion": "1.4.3.0",
+            "fileVersion": "1.4.3.0"
+          }
+        }
+      },
+      "Npgsql/8.0.3": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.0"
+        },
+        "runtime": {
+          "lib/net8.0/Npgsql.dll": {
+            "assemblyVersion": "8.0.3.0",
+            "fileVersion": "8.0.3.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore/6.5.0": {
+        "dependencies": {
+          "Microsoft.Extensions.ApiDescription.Server": "6.0.5",
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerGen": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerUI": "6.5.0"
+        }
+      },
+      "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.Swagger.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+        "dependencies": {
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerGen.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerUI.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "NeolantDemo/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.AspNetCore.OpenApi/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-T4mwMvPSOYAp+KeQ4xO8H2rxpiOMJ9W/7yBBkUTMp96AHtGlPN4s7hbax2tM61LxTY775JKL4fiv5grn41EHXw==",
+      "path": "microsoft.aspnetcore.openapi/8.0.0",
+      "hashPath": "microsoft.aspnetcore.openapi.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.ApiDescription.Server/6.0.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ckb5EDBUNJdFWyajfXzUIMRkhf52fHZOQuuZg/oiu8y7zDCVwD0iHhew6MnThjHmevanpxL3f5ci2TtHQEN6bw==",
+      "path": "microsoft.extensions.apidescription.server/6.0.5",
+      "hashPath": "microsoft.extensions.apidescription.server.6.0.5.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-cjWrLkJXK0rs4zofsK4bSdg+jhDLTaxrkXu4gS6Y7MAlCvRyNNgwY/lJi5RDlQOnSZweHqoyvgvbdvQsRIW+hg==",
+      "path": "microsoft.extensions.dependencyinjection.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-arDBqTgFCyS0EvRV7O3MZturChstm50OJ0y9bDJvAcmEPJm0FFpFyjU/JLYyStNGGey081DvnQYlncNX5SJJGA==",
+      "path": "microsoft.extensions.logging.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.OpenApi/1.4.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-rURwggB+QZYcSVbDr7HSdhw/FELvMlriW10OeOzjPT7pstefMo7IThhtNtDudxbXhW+lj0NfX72Ka5EDsG8x6w==",
+      "path": "microsoft.openapi/1.4.3",
+      "hashPath": "microsoft.openapi.1.4.3.nupkg.sha512"
+    },
+    "Npgsql/8.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-6WEmzsQJCZAlUG1pThKg/RmeF6V+I0DmBBBE/8YzpRtEzhyZzKcK7ulMANDm5CkxrALBEC8H+5plxHWtIL7xnA==",
+      "path": "npgsql/8.0.3",
+      "hashPath": "npgsql.8.0.3.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-FK05XokgjgwlCI6wCT+D4/abtQkL1X1/B9Oas6uIwHFmYrIO9WUD5aLC9IzMs9GnHfUXOtXZ2S43gN1mhs5+aA==",
+      "path": "swashbuckle.aspnetcore/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XWmCmqyFmoItXKFsQSwQbEAsjDKcxlNf1l+/Ki42hcb6LjKL8m5Db69OTvz5vLonMSRntYO1XLqz0OP+n3vKnA==",
+      "path": "swashbuckle.aspnetcore.swagger/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swagger.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Y/qW8Qdg9OEs7V013tt+94OdPxbRdbhcEbw4NiwGvf4YBcfhL/y7qp/Mjv/cENsQ2L3NqJ2AOu94weBy/h4KvA==",
+      "path": "swashbuckle.aspnetcore.swaggergen/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggergen.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OvbvxX+wL8skxTBttcBsVxdh73Fag4xwqEU2edh4JMn7Ws/xJHnY/JB1e9RoCb6XpDxUF3hD9A0Z1lEUx40Pfw==",
+      "path": "swashbuckle.aspnetcore.swaggerui/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggerui.6.5.0.nupkg.sha512"
+    }
+  }
+}
+
+===== FILE: ./dotnet_app/out/out/out/NeolantDemo.runtimeconfig.json =====
+{
+  "runtimeOptions": {
+    "tfm": "net8.0",
+    "frameworks": [
+      {
+        "name": "Microsoft.NETCore.App",
+        "version": "8.0.0"
+      },
+      {
+        "name": "Microsoft.AspNetCore.App",
+        "version": "8.0.0"
+      }
+    ],
+    "configProperties": {
+      "System.GC.Server": true,
+      "System.Reflection.Metadata.MetadataUpdater.IsSupported": false,
+      "System.Runtime.Serialization.EnableUnsafeBinaryFormatterSerialization": false
+    }
+  }
+}
+
+===== FILE: ./dotnet_app/out/out/out/NeolantDemo.deps.json =====
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "NeolantDemo/1.0.0": {
+        "dependencies": {
+          "Microsoft.AspNetCore.OpenApi": "8.0.0",
+          "Npgsql": "8.0.3",
+          "Swashbuckle.AspNetCore": "6.5.0"
+        },
+        "runtime": {
+          "NeolantDemo.dll": {}
+        }
+      },
+      "Microsoft.AspNetCore.OpenApi/8.0.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net8.0/Microsoft.AspNetCore.OpenApi.dll": {
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.0.23.53112"
+          }
+        }
+      },
+      "Microsoft.Extensions.ApiDescription.Server/6.0.5": {},
+      "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {},
+      "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.0"
+        }
+      },
+      "Microsoft.OpenApi/1.4.3": {
+        "runtime": {
+          "lib/netstandard2.0/Microsoft.OpenApi.dll": {
+            "assemblyVersion": "1.4.3.0",
+            "fileVersion": "1.4.3.0"
+          }
+        }
+      },
+      "Npgsql/8.0.3": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.0"
+        },
+        "runtime": {
+          "lib/net8.0/Npgsql.dll": {
+            "assemblyVersion": "8.0.3.0",
+            "fileVersion": "8.0.3.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore/6.5.0": {
+        "dependencies": {
+          "Microsoft.Extensions.ApiDescription.Server": "6.0.5",
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerGen": "6.5.0",
+          "Swashbuckle.AspNetCore.SwaggerUI": "6.5.0"
+        }
+      },
+      "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+        "dependencies": {
+          "Microsoft.OpenApi": "1.4.3"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.Swagger.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+        "dependencies": {
+          "Swashbuckle.AspNetCore.Swagger": "6.5.0"
+        },
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerGen.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      },
+      "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+        "runtime": {
+          "lib/net7.0/Swashbuckle.AspNetCore.SwaggerUI.dll": {
+            "assemblyVersion": "6.5.0.0",
+            "fileVersion": "6.5.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "NeolantDemo/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Microsoft.AspNetCore.OpenApi/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-T4mwMvPSOYAp+KeQ4xO8H2rxpiOMJ9W/7yBBkUTMp96AHtGlPN4s7hbax2tM61LxTY775JKL4fiv5grn41EHXw==",
+      "path": "microsoft.aspnetcore.openapi/8.0.0",
+      "hashPath": "microsoft.aspnetcore.openapi.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.ApiDescription.Server/6.0.5": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Ckb5EDBUNJdFWyajfXzUIMRkhf52fHZOQuuZg/oiu8y7zDCVwD0iHhew6MnThjHmevanpxL3f5ci2TtHQEN6bw==",
+      "path": "microsoft.extensions.apidescription.server/6.0.5",
+      "hashPath": "microsoft.extensions.apidescription.server.6.0.5.nupkg.sha512"
+    },
+    "Microsoft.Extensions.DependencyInjection.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-cjWrLkJXK0rs4zofsK4bSdg+jhDLTaxrkXu4gS6Y7MAlCvRyNNgwY/lJi5RDlQOnSZweHqoyvgvbdvQsRIW+hg==",
+      "path": "microsoft.extensions.dependencyinjection.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.dependencyinjection.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Logging.Abstractions/8.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-arDBqTgFCyS0EvRV7O3MZturChstm50OJ0y9bDJvAcmEPJm0FFpFyjU/JLYyStNGGey081DvnQYlncNX5SJJGA==",
+      "path": "microsoft.extensions.logging.abstractions/8.0.0",
+      "hashPath": "microsoft.extensions.logging.abstractions.8.0.0.nupkg.sha512"
+    },
+    "Microsoft.OpenApi/1.4.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-rURwggB+QZYcSVbDr7HSdhw/FELvMlriW10OeOzjPT7pstefMo7IThhtNtDudxbXhW+lj0NfX72Ka5EDsG8x6w==",
+      "path": "microsoft.openapi/1.4.3",
+      "hashPath": "microsoft.openapi.1.4.3.nupkg.sha512"
+    },
+    "Npgsql/8.0.3": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-6WEmzsQJCZAlUG1pThKg/RmeF6V+I0DmBBBE/8YzpRtEzhyZzKcK7ulMANDm5CkxrALBEC8H+5plxHWtIL7xnA==",
+      "path": "npgsql/8.0.3",
+      "hashPath": "npgsql.8.0.3.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-FK05XokgjgwlCI6wCT+D4/abtQkL1X1/B9Oas6uIwHFmYrIO9WUD5aLC9IzMs9GnHfUXOtXZ2S43gN1mhs5+aA==",
+      "path": "swashbuckle.aspnetcore/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.Swagger/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-XWmCmqyFmoItXKFsQSwQbEAsjDKcxlNf1l+/Ki42hcb6LjKL8m5Db69OTvz5vLonMSRntYO1XLqz0OP+n3vKnA==",
+      "path": "swashbuckle.aspnetcore.swagger/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swagger.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerGen/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-Y/qW8Qdg9OEs7V013tt+94OdPxbRdbhcEbw4NiwGvf4YBcfhL/y7qp/Mjv/cENsQ2L3NqJ2AOu94weBy/h4KvA==",
+      "path": "swashbuckle.aspnetcore.swaggergen/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggergen.6.5.0.nupkg.sha512"
+    },
+    "Swashbuckle.AspNetCore.SwaggerUI/6.5.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-OvbvxX+wL8skxTBttcBsVxdh73Fag4xwqEU2edh4JMn7Ws/xJHnY/JB1e9RoCb6XpDxUF3hD9A0Z1lEUx40Pfw==",
+      "path": "swashbuckle.aspnetcore.swaggerui/6.5.0",
+      "hashPath": "swashbuckle.aspnetcore.swaggerui.6.5.0.nupkg.sha512"
+    }
+  }
+}
+
+===== FILE: ./demo.sh =====
+#!/bin/bash
+
+echo "=============================================="
+echo "NEOLANT DEVOPS DEMO - ПОЛНЫЙ СТЕК"
+echo "=============================================="
+echo ""
+
+echo "1. ЗАПУСК ВСЕХ СЕРВИСОВ:"
+echo "   $ ./run.sh"
+echo ""
+sleep 2
+
+echo "2. ПРОВЕРКА ЗДОРОВЬЯ СЕРВИСОВ:"
+echo "   $ curl http://localhost:8081/health"
+curl -s http://localhost:8081/health | jq .
+echo ""
+echo "   $ curl http://localhost:8001/health"
+curl -s http://localhost:8001/health | jq .
+echo ""
+sleep 2
+
+echo "3. .NET API - ПРОМЫШЛЕННЫЕ ОБЪЕКТЫ:"
+echo "   $ curl http://localhost:8081/api/industrial-objects | jq ."
+curl -s http://localhost:8081/api/industrial-objects | jq .
+echo ""
+sleep 2
+
+echo "4. PYTHON API - МЕТРИКИ МОНИТОРИНГА:"
+echo "   $ curl http://localhost:8001/api/metrics"
+curl -s http://localhost:8001/api/metrics | jq .
+echo ""
+sleep 2
+
+echo "5. POSTGRESQL - ДАННЫЕ В БАЗЕ:"
+echo "   $ docker exec neolant-postgres psql -U postgres -d neolant_db -c 'SELECT id, name, type FROM industrial_objects;'"
+docker exec neolant-postgres psql -U postgres -d neolant_db -c "SELECT id, name, type FROM industrial_objects;"
+echo ""
+sleep 2
+
+echo "6. DOCKER КОНТЕЙНЕРЫ:"
+echo "   $ docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
+echo ""
+sleep 2
+
+echo "7. БЭКАП БАЗЫ ДАННЫХ:"
+echo "   $ ./scripts/backup.sh"
+./scripts/backup.sh 2>/dev/null || echo "Бэкап создается..."
+echo ""
+sleep 2
+
+echo "8. МОНИТОРИНГ СЕРВИСОВ:"
+echo "   $ ./scripts/monitor.sh"
+./scripts/monitor.sh
+echo ""
+sleep 2
+
+echo "=============================================="
+echo "ТЕХНИЧЕСКИЕ ХАРАКТЕРИСТИКИ:"
+echo "• 3 микросервиса в Docker контейнерах"
+echo "• PostgreSQL 15 с промышленными данными"
+echo "• ASP.NET Core 8 Web API"
+echo "• FastAPI Python 3.11"
+echo "• Автоматическое резервное копирование"
+echo "• Health checks и мониторинг"
+echo "• Kubernetes-ready манифесты"
+echo "• Helm charts для деплоя"
+echo "• CI/CD через GitHub Actions"
+echo "=============================================="
+
+echo "9. КЛЮЧЕВЫЕ ФАЙЛЫ ПРОЕКТА:"
+echo "   Структура проекта:"
+tree -L 2 2>/dev/null || find . -maxdepth 2 -type f -name "*.yml" -o -name "*.yaml" -o -name "Dockerfile*" -o -name "*.sh" | grep -v backups | head -10
+echo ""
+sleep 2
+
+echo "=============================================="
+echo "GitHub репозиторий: (скопируйте после создания)"
+echo "# Создайте репозиторий на GitHub.com"
+echo "# Затем выполните:"
+echo "git init"
+echo "git add ."
+echo "git commit -m 'Neolant DevOps Demo'"
+echo "git branch -M main"
+echo "git remote add origin git@github.com:ВАШ_ЛОГИН/neolant-devops-demo.git"
+echo "git push -u origin main"
+echo "=============================================="
+
+
+===== FILE: ./.github/workflows/ci.yml =====
+name: Real Project CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        working-directory: dotnet_app
+        run: dotnet restore
+
+      - name: Build
+        working-directory: dotnet_app
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        working-directory: dotnet_app
+        run: dotnet test --no-build -c Release
+
+
+===== FILE: ./init_git.sh =====
+#!/bin/bash
+
+echo "=== ИНИЦИАЛИЗАЦИЯ GIT ДЛЯ NEOLANT DEMO ==="
+echo ""
+
+# Проверяем наличие SSH ключа
+if [ ! -f ~/.ssh/id_ed25519 ]; then
+    echo "1. СОЗДАЕМ SSH КЛЮЧ..."
+    ssh-keygen -t ed25519 -C "neolant-demo@github.com" -f ~/.ssh/id_ed25519 -N ""
+    echo ""
+    echo "=== ДОБАВЬ ЭТОТ КЛЮЧ В GITHUB ==="
+    echo "1. Открой https://github.com/settings/keys"
+    echo "2. Нажми 'New SSH key'"
+    echo "3. Введи название: 'Neolant Demo'"
+    echo "4. Вставь ключ ниже:"
+    echo ""
+    cat ~/.ssh/id_ed25519.pub
+    echo ""
+    read -p "Нажми Enter после добавления ключа в GitHub..."
+fi
+
+echo ""
+echo "2. СОЗДАЙ РЕПОЗИТОРИЙ НА GITHUB:"
+echo "   Открой: https://github.com/new"
+echo "   Repository name: neolant-devops-demo"
+echo "   Description: DevOps Demo project for Neolant interview"
+echo "   Public repository"
+echo "   НЕ добавляй README, .gitignore, license"
+echo "   Нажми 'Create repository'"
+echo ""
+read -p "Введи SSH URL репозитория (например git@github.com:username/neolant-devops-demo.git): " repo_url
+
+echo ""
+echo "3. ИНИЦИАЛИЗИРУЕМ GIT..."
+git init
+git add .
+git commit -m "Neolant DevOps Demo: Complete stack for interview
+
+Features:
+- .NET Core 8 API for industrial objects
+- PostgreSQL 15 with production data
+- Python FastAPI monitoring service
+- Docker Compose with health checks
+- Kubernetes manifests
+- Helm charts
+- CI/CD with GitHub Actions
+- Bash scripts for backup and monitoring"
+
+echo ""
+echo "4. ДОБАВЛЯЕМ REMOTE И ПУШИМ..."
+git branch -M main
+git remote add origin "$repo_url"
+git push -u origin main
+
+echo ""
+echo "🎉 ПРОЕКТ ЗАПУШЕН В GITHUB!"
+echo "Ссылка: https://github.com/$(echo $repo_url | cut -d':' -f2 | sed 's/.git$//')"
+echo ""
+echo "Добавь эту ссылку в резюме!"
+echo "Для демонстрации на собеседовании: ./demo.sh"
+
+
+===== FILE: ./README.md =====
+# DevOps Demo для Neolant
+
+## 📋 Покрытие требований вакансии
+
+### ✅ Обязательные:
+- Linux: Все скрипты на Bash
+- Docker: Dockerfile + Docker Compose
+- Git: CI/CD через GitHub Actions
+- SQL: PostgreSQL с бэкапами
+- Bash: Скрипты администрирования
+- Сети: Nginx, сетевые настройки
+
+### ✅ Желательные:
+- .NET Core: Рабочее приложение
+- Kubernetes: Манифесты
+- Helm: Chart для деплоя
+- TLS: SSL сертификаты
+- Мониторинг: Prometheus + Grafana
+
+## 🚀 Быстрый старт
+```bash
+# 1. Поднять инфраструктуру
+docker-compose -f deploy/docker-compose.yml up -d
+
+# 2. Проверить
+curl http://localhost:8080/health
+curl http://localhost:8000/health
+```
+
+📁 Структура проекта
+
+· /app - Python FastAPI приложение
+· /dotnet_app - .NET Core Web API
+· /db - SQL скрипты
+· /deploy - Docker и Nginx конфиги
+· /scripts - Bash скрипты
+· /k8s - Kubernetes манифесты
+· /helm - Helm charts
+· /.github - CI/CD workflows
+
+
+
+
+# devops_demo
+# devops_demo
+
+
+===== FILE: ./app/main.py =====
+from fastapi import FastAPI
+from datetime import datetime
+
+app = FastAPI(title="Neolant Monitoring API")
+
+@app.get("/")
+def read_root():
+    return {"message": "Industrial Monitoring System"}
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "python-api",
+        "timestamp": datetime.utcnow().isoformat(),
+        "database": "connected"
+    }
+
+@app.get("/metrics")
+@app.get("/api/metrics")
+def get_metrics():
+    return {
+        "industrial_objects": 42,
+        "equipment_total": 156,
+        "uptime_percentage": 99.87
+    }
+
+
+===== FILE: ./k8s/postgres-statefulset.yaml =====
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+name: postgres
+spec:
+serviceName: postgres
+replicas: 1
+selector:
+matchLabels:
+app: postgres
+template:
+metadata:
+labels:
+app: postgres
+spec:
+containers:
+- name: postgres
+image: postgres:15-alpine
+env:
+- name: POSTGRES_PASSWORD
+value: "postgres"
+- name: POSTGRES_DB
+value: "neolant_db"
+ports:
+- containerPort: 5432
+volumeMounts:
+- name: postgres-data
+mountPath: /var/lib/postgresql/data
+volumeClaimTemplates:
+
+· metadata:
+  name: postgres-data
+  spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+  requests:
+  storage: 10Gi
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+name: postgres
+spec:
+ports:
+
+· port: 5432
+  selector:
+  app: postgres
+  clusterIP: None
+  EOF
+
+cat > k8s/dotnet-deployment.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+name: dotnet-api
+spec:
+replicas: 2
+selector:
+matchLabels:
+app: dotnet-api
+template:
+metadata:
+labels:
+app: dotnet-api
+spec:
+containers:
+- name: dotnet-api
+image: neolant/dotnet-api:latest
+ports:
+- containerPort: 8080
+env:
+- name: ASPNETCORE_ENVIRONMENT
+value: "Production"
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+name: dotnet-api
+spec:
+type: ClusterIP
+ports:
+
+· port: 80
+  targetPort: 8080
+  selector:
+  app: dotnet-api
+  EOF
+
+cat > helm/Chart.yaml << 'EOF'
+apiVersion: v2
+name: neolant
+description: Neolant Industrial Platform
+version: 1.0.0
+
+
+===== FILE: ./deploy/docker-compose.yml =====
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: neolant-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: neolant_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dotnet-app:
+    build: ../dotnet_app
+    container_name: neolant-dotnet-api
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_CONNECTION_STRING: "Host=postgres;Port=5432;Database=neolant_db;Username=postgres;Password=postgres;"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  python-app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.python
+    container_name: neolant-python-api
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/neolant_db"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+
+
+===== FILE: ./test_locally.sh =====
+#!/bin/bash
+echo "=== Локальный тест CI/CD ==="
+
+# 1. Проверяем структуру
+echo "1. Проверяем структуру проекта..."
+[ -f "deploy/docker-compose.yml" ] && echo "✅ docker-compose.yml существует" || echo "❌ docker-compose.yml отсутствует"
+[ -f "dotnet_app/NeolantDemo.csproj" ] && echo "✅ .NET project существует" || echo "❌ .NET project отсутствует"
+[ -f "app/requirements.txt" ] && echo "✅ requirements.txt существует" || echo "❌ requirements.txt отсутствует"
+[ -f "db/init.sql" ] && echo "✅ init.sql существует" || echo "❌ init.sql отсутствует"
+
+# 2. Проверяем приватные ключи
+echo -e "\n2. Проверяем приватные ключи..."
+if find . -name "*.key" -o -name "*.pem" -o -name "*.crt" | grep -v node_modules | grep -v ".git"; then
+    echo "⚠️  Найденные файлы ключей (проверь .gitignore):"
+    find . -name "*.key" -o -name "*.pem" -o -name "*.crt" | grep -v node_modules | grep -v ".git"
+else
+    echo "✅ Приватных ключей не найдено"
+fi
+
+# 3. Проверяем синтаксис bash скриптов
+echo -e "\n3. Проверяем bash скрипты..."
+for script in scripts/*.sh; do
+    if [ -f "$script" ]; then
+        if bash -n "$script"; then
+            echo "✅ $script: синтаксис корректен"
+        else
+            echo "❌ $script: ошибка синтаксиса"
+        fi
+    fi
+done
+
+# 4. Проверяем docker-compose
+echo -e "\n4. Проверяем docker-compose..."
+if docker-compose -f deploy/docker-compose.yml config > /dev/null 2>&1; then
+    echo "✅ docker-compose.yml валиден"
+else
+    echo "❌ docker-compose.yml невалиден"
+fi
+
+echo -e "\n=== Тест завершен ==="
+
+
+===== FILE: ./helm/values.yaml =====
+replicaCount: 2
+image:
+repository: neolant/dotnet-api
+tag: latest
+service:
+type: ClusterIP
+port: 80
+
+
+===== FILE: ./simulate-gh-actions.sh =====
+#!/bin/bash
+echo "=== СИМУЛЯЦИЯ GITHUB ACTIONS ==="
+echo ""
+
+echo "1. Проверяем YAML синтаксис пайплайна..."
+if python3 -c "import yaml; yaml.safe_load(open('.github/workflows/test.yml'))" 2>/dev/null; then
+    echo "✅ YAML синтаксис OK"
+else
+    echo "❌ Ошибка в YAML файле!"
+    exit 1
+fi
+
+echo ""
+echo "2. Проверяем структуру как в пайплайне..."
+echo "=== ФАЙЛЫ В РЕПОЗИТОРИИ ==="
+find . -type f | grep -E '\.(sh|yml|yaml|cs|py|sql|csproj)$' | head -20
+
+echo ""
+echo "=== ПРОВЕРКА ПРИВАТНЫХ КЛЮЧЕЙ ==="
+KEY_FILES=$(find . -type f -name "*.key" -o -name "*.pem" -o -name "*.crt" 2>/dev/null | grep -v node_modules | grep -v ".git" | wc -l)
+if [ $KEY_FILES -gt 0 ]; then
+    echo "❌ Найдено приватных ключей: $KEY_FILES"
+    find . -type f -name "*.key" -o -name "*.pem" -o -name "*.crt" 2>/dev/null | grep -v node_modules | grep -v ".git"
+    echo "СОВЕТ: удали их из Git: git rm --cached <файлы>"
+else
+    echo "✅ Приватных ключей нет"
+fi
+
+echo ""
+echo "=== ПРОСТАЯ ВАЛИДАЦИЯ ==="
+[ -f "run.sh" ] && echo "✅ run.sh есть" || echo "❌ run.sh нет"
+[ -f "deploy/docker-compose.yml" ] && echo "✅ docker-compose.yml есть" || echo "❌ docker-compose.yml нет"
+
+echo ""
+echo "🎉 Локальная симуляция прошла успешно!"
+echo "Теперь можно пушить и смотреть реальный запуск на GitHub"
+
+
+===== FILE: ./scripts/validate-local.sh =====
+#!/usr/bin/env bash
+set -e
+
+cd "$(dirname "$0")/.."
+
+echo "== LOCAL CI CHECK =="
+
+echo "[1] .NET restore & build"
+cd dotnet_app
+dotnet restore
+dotnet publish -c Release -o out
+cd ..
+
+echo "[2] Docker build"
+docker build -t neolant-dotnet ./dotnet_app
+docker build -t neolant-python -f deploy/Dockerfile.python .
+
+echo "[3] Start docker-compose"
+docker compose -f deploy/docker-compose.yml up -d
+
+echo "[4] Wait PostgreSQL"
+for i in {1..30}; do
+  if docker exec neolant-postgres pg_isready -U postgres; then
+    echo "Postgres ready"
+    break
+  fi
+  sleep 2
+done
+
+echo "[5] Wait .NET API"
+for i in {1..30}; do
+  if curl -sf http://localhost:8081/health >/dev/null; then
+    echo ".NET API ready"
+    break
+  fi
+  sleep 2
+done
+
+echo "[6] Wait Python API"
+for i in {1..30}; do
+  if curl -sf http://localhost:8001/health >/dev/null; then
+    echo "Python API ready"
+    break
+  fi
+  sleep 2
+done
+
+echo "[7] Smoke tests"
+curl -f http://localhost:8081/health
+curl -f http://localhost:8001/health
+
+echo "[8] Teardown"
+docker compose -f deploy/docker-compose.yml down -v
+
+echo "✅ LOCAL CI PASSED"
+
+
+===== FILE: ./scripts/monitor.sh =====
+#!/bin/bash
+echo "=== Service Health Check ==="
+echo "Checking at: $(date)"
+
+check_http_service() {
+    local name=$1
+    local url=$2
+    
+    if curl -s -f "$url" > /dev/null; then
+        echo "✅ $name: HEALTHY"
+        return 0
+    else
+        echo "❌ $name: UNHEALTHY"
+        return 1
+    fi
+}
+
+check_port_service() {
+    local name=$1
+    local port=$2
+    
+    if nc -z localhost "$port" 2>/dev/null; then
+        echo "✅ $name: PORT OPEN"
+        return 0
+    else
+        echo "❌ $name: PORT CLOSED"
+        return 1
+    fi
+}
+
+check_db_service() {
+    local name=$1
+    local container=$2
+    
+    if docker exec "$container" pg_isready -U postgres > /dev/null 2>&1; then
+        echo "✅ $name: DATABASE READY"
+        return 0
+    else
+        echo "❌ $name: DATABASE NOT READY"
+        return 1
+    fi
+}
+
+echo "--- HTTP Services ---"
+check_http_service ".NET API" "http://localhost:8081/health"
+check_http_service "Python API" "http://localhost:8001/health"
+
+echo "--- Port Checks ---"
+check_port_service "PostgreSQL Port" "5433"
+
+echo "--- Database Check ---"
+check_db_service "PostgreSQL Database" "neolant-postgres"
+
+echo "=== Check Complete ==="
+
+
+===== FILE: ./scripts/backup.sh =====
+#!/bin/bash
+set -e
+
+echo "=== PostgreSQL Backup ==="
+BACKUP_DIR="./backups"
+mkdir -p "$BACKUP_DIR"
+FILENAME="neolant_backup_$(date +%Y%m%d_%H%M%S).sql"
+
+docker exec neolant-postgres pg_dump -U postgres neolant_db > "$BACKUP_DIR/$FILENAME"
+gzip "$BACKUP_DIR/$FILENAME"
+
+echo "Backup created: $BACKUP_DIR/$FILENAME.gz"
+ls -lh "$BACKUP_DIR/"
+
+

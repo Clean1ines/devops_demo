@@ -1,0 +1,30 @@
+# ENV
+.env
+.env.*
+
+# SSL / Secrets
+*.pem
+*.key
+*.crt
+*.pfx
+deploy/ssl/
+
+# Build
+bin/
+obj/
+out/
+
+# Docker
+postgres_data/
+compose.log
+local-compose.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,73 @@
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: neolant-postgres
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: neolant_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dotnet-app:
+    build: ../dotnet_app
+    container_name: neolant-dotnet-api
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_CONNECTION_STRING: "Host=postgres;Port=5432;Database=neolant_db;Username=postgres;Password=postgres;"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  python-app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.python
+    container_name: neolant-python-api
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/neolant_db"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nginx:
+    image: nginx:alpine
+    container_name: neolant-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - dotnet-app
+      - python-app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -k https://localhost/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:

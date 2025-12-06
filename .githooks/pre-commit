@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -e
+
+echo "🔐 Pre-commit security scan..."
+
+# Реальные сигнатуры секретов (без ложных срабатываний)
+BLOCK_PATTERNS='-----BEGIN( RSA)? PRIVATE KEY-----|AKIA[0-9A-Z]{16}|SECRET_KEY[[:space:]]*=|TOKEN[[:space:]]*=|PASSWORD[[:space:]]*='
+
+FILES=$(git diff --cached --name-only)
+
+for f in $FILES; do
+  # исключаем сам хук
+  if [[ "$f" == ".githooks/pre-commit" ]]; then
+    continue
+  fi
+
+  # если файл ещё не в индексе — пропускаем
+  if ! git show ":$f" >/dev/null 2>&1; then
+    continue
+  fi
+
+  # проверяем только текст
+  if ! git show ":$f" | file - | grep -qi text; then
+    continue
+  fi
+
+  if git show ":$f" | grep -Ei "$BLOCK_PATTERNS" >/dev/null; then
+    echo "❌ SECURITY BLOCK: Secret detected in $f"
+    exit 1
+  fi
+done
+
+echo "✅ Security scan passed"
+exit 0

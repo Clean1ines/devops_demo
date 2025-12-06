@@ -1,0 +1,14 @@
+FROM nginx:alpine
+
+# Копируем конфигурацию
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Создаем директорию для SSL сертификатов
+RUN mkdir -p /etc/nginx/ssl
+
+# Копируем SSL сертификаты если они есть
+COPY ssl/*.crt /etc/nginx/ssl/
+COPY ssl/*.key /etc/nginx/ssl/
+
+# Проверяем конфигурацию при запуске
+CMD ["sh", "-c", "nginx -t && nginx -g 'daemon off;'"]

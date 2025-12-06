@@ -1,0 +1,14 @@
+/
+├── .githooks/
+├── .github/
+│   └── workflows/
+├── app/
+│   └── main.py (584.0 B)
+├── backups/
+├── db/
+├── deploy/
+│   └── ssl/
+├── dotnet_app/
+├── helm/
+├── k8s/
+└── scripts/

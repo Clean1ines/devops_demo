@@ -1,0 +1,7 @@
+replicaCount: 2
+image:
+repository: neolant/dotnet-api
+tag: latest
+service:
+type: ClusterIP
+port: 80
