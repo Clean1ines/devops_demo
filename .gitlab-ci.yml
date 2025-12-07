@@ -1,0 +1,35 @@
+stages:
+  - test
+  - backup
+
+test-services:
+  stage: test
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker info
+  script:
+    - docker-compose -f deploy/docker-compose.yml up -d
+    - sleep 20
+    - curl -sk https://localhost/api/dotnet/health
+    - curl -sk https://localhost/api/python/health
+    - echo "✅ All services are healthy"
+  after_script:
+    - docker-compose -f deploy/docker-compose.yml down
+
+create-backup:
+  stage: backup
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker-compose -f deploy/docker-compose.yml up -d postgres
+    - sleep 10
+    - mkdir -p backups
+    - docker exec neolant-postgres pg_dump -U postgres neolant_db > backups/test-backup.sql
+    - echo "✅ Backup created successfully"
+  artifacts:
+    paths:
+      - backups/
+    expire_in: 1 week
